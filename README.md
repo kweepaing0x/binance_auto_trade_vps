@@ -34,7 +34,8 @@ nyogyi-ultimate-trader/
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/your-username/nyogyi-ultimate-trader.git
+   git clone https://github.com/ykweepaing0x
+   /nyogyi-ultimate-trader.git
    cd nyogyi-ultimate-trader
    ```
 
