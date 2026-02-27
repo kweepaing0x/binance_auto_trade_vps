@@ -68,7 +68,7 @@ async function getKlines(symbol, interval, limit) {
 async function runMorningScan() {
     console.log("\n[UTC 04:00] 🔍 Executing Morning 15m Volume Spike Filter...");
     const res = await axios.get("https://api.binance.com/api/v3/ticker/24hr");
-    const pairs = res.data.filter(t => t.symbol.endsWith("USDT") && parseFloat(t.quoteVolume) > 5000000);
+    const pairs = res.data.filter(t => t.symbol.endsWith("USDT") && DeepScan.checkLiquidity(t.quoteVolume, 10000000)); // Filter by liquidity (e.g., > 10M USDT 24h volume)
     
     let newCandidates = [];
     for (const p of pairs.slice(0, 50)) {
@@ -148,7 +148,12 @@ async function runScalpLogic() {
             if (candles1hForDeepScan.length < 24) continue;
             const deepScanResult = DeepScan.analyzeAccumulation(candles1hForDeepScan);
 
-            if (deepScanResult.isAccumulating) {
+            // Fetch more klines for FVG detection (e.g., 50 candles for 1h)
+            const candlesForFvg = await getKlines(symbol, '1h', 50);
+            const fvgs = DeepScan.findFairValueGaps(candlesForFvg);
+            const hasBullishFvg = fvgs.some(fvg => fvg.type === 'BULLISH');
+
+            if (deepScanResult.isAccumulating && hasBullishFvg) {
                 console.log(`🎯 SNIPER FOUND: LONG ${symbol} at ${k1h[k1h.length-1].c}`);
                 await executeTrade(symbol, 'BUY', k1h[k1h.length-1].c);
                 break; // Stop scanning once we initiate an order

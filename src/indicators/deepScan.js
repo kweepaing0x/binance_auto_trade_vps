@@ -40,4 +40,40 @@ class DeepScan {
     }
 }
 
+    /**
+     * Liquidity Check
+     * Simple check based on 24h volume.
+     */
+    static checkLiquidity(quoteVolume, minVolume = 10000000) {
+        return parseFloat(quoteVolume) > minVolume;
+    }
+
+    /**
+     * Fair Value Gap (FVG) Detection
+     * Bullish FVG: low[0] > high[2] (candle 0 is current, candle 2 is 2 candles ago)
+     * Bearish FVG: high[0] < low[2]
+     * Candles array should be ordered from oldest to newest.
+     */
+    static findFairValueGaps(candles) {
+        const fvgs = [];
+        if (candles.length < 3) return fvgs;
+
+        for (let i = 2; i < candles.length; i++) {
+            const candle0 = candles[i];     // Current candle
+            const candle1 = candles[i - 1]; // Middle candle
+            const candle2 = candles[i - 2]; // Oldest candle
+
+            // Bullish FVG: Low of candle0 > High of candle2
+            if (candle0.l > candle2.h && candle0.l > candle1.h && candle1.l > candle2.h) {
+                fvgs.push({ type: 'BULLISH', start: candle2.h, end: candle0.l, candleIndex: i });
+            }
+            // Bearish FVG: High of candle0 < Low of candle2
+            else if (candle0.h < candle2.l && candle0.h < candle1.l && candle1.h < candle2.l) {
+                fvgs.push({ type: 'BEARISH', start: candle0.h, end: candle2.l, candleIndex: i });
+            }
+        }
+        return fvgs;
+    }
+}
+
 module.exports = DeepScan;
