@@ -24,6 +24,7 @@ const CONFIG = {
     TP_ROI_HIGH: 0.20, // 20%
     TP_ROI_LOW: 0.10,  // 10%
     SL_ROI: -0.20,     // -20%
+    BREAK_EVEN_PROFIT_PERCENTAGE: 0.05, // Move SL to entry at 5% profit
     WATCHLIST_PATH: './watchlist.json',
     WATCHLIST_EXPIRY_DAYS: 5,
     STATE_PATH: './engine_state.json',
@@ -36,7 +37,8 @@ let state = {
     lastP1Run: null,
     lastScalpRun: null,
     pnl: 0,
-    watchlist: [] // { symbol: 'BTCUSDT', expiry: timestamp }
+    watchlist: [], // { symbol: 'BTCUSDT', expiry: timestamp }
+    breakEvenHit: false // Track if SL has been moved to break-even
 };
 
 // --- HELPER: SIGNED API REQUESTS ---
@@ -125,7 +127,22 @@ async function runScalpLogic() {
 
     for (const item of state.watchlist) {
         const symbol = item.symbol;
-        // Get 1-hour klines for EMA calculation
+
+        // 1. 4H Trend Filter (Macro Trend)
+        const k4h = await getKlines(symbol, '4h', 50); // Need enough data for EMA 200
+        if (k4h.length < 50) continue;
+        const prices4h = k4h.map(k => k.c);
+        const ema200_4h = Indicators.ema(prices4h, 50); // Using 50 periods on 4H as a proxy for EMA 200 on 1H
+        if (ema200_4h.length === 0) continue;
+        const lastEma200_4h = ema200_4h[ema200_4h.length - 1];
+        const lastPrice4h = prices4h[prices4h.length - 1];
+
+        if (lastPrice4h < lastEma200_4h) {
+            console.log(`[4H Filter] Skipping ${symbol}: Price is below 4H EMA 200 proxy. Longs only.`);
+            continue;
+        }
+
+        // 2. 1H EMA Crossover Check
         const k1h = await getKlines(symbol, '1h', 30); // Need enough data for EMA 21
         if (k1h.length < 21) continue; // Ensure enough data for EMA 21
 
@@ -189,6 +206,8 @@ async function monitorPosition() {
 
     // Check for Take Profit or Stop Loss
     if (currentPrice >= state.tpPriceHigh || currentPrice <= state.slPrice) {
+        // If TP/SL hit, reset breakEvenHit flag
+        state.breakEvenHit = false;
         console.log(`\n🎯 Closing position for ${state.activeSymbol} at ${currentPrice}. TP/SL hit.`);
         // Simulate closing position (actual API call would go here)
         state.mode = 'SCANNING';
@@ -202,12 +221,16 @@ async function monitorPosition() {
         return;
     }
 
-    // Check for lower TP if price starts to drop after reaching a certain profit
-    // This is a simplified example, more complex trailing stop/partial close logic can be added
-    if (currentPrice >= state.tpPriceLow && currentPrice < state.tpPriceHigh) {
-        // Optionally, you could implement a trailing stop or move SL to breakeven here
-        // For now, we'll just log that it's in the profit zone
-        console.log(`[LIVE PNL] ${state.activeSymbol}: In profit zone (${(currentPrice / state.entryPrice - 1) * 100}%)`);
+    // Move Stop Loss to Break-Even if profit target is hit
+    const currentProfitPercentage = (currentPrice - state.entryPrice) / state.entryPrice;
+    if (!state.breakEvenHit && currentProfitPercentage >= CONFIG.BREAK_EVEN_PROFIT_PERCENTAGE) {
+        state.slPrice = state.entryPrice;
+        state.breakEvenHit = true;
+        console.log(`\n✅ SL moved to Break-Even for ${state.activeSymbol} at ${state.entryPrice}`);
+    }
+
+    if (currentProfitPercentage >= CONFIG.TP_ROI_LOW && currentProfitPercentage < CONFIG.TP_ROI_HIGH) {
+        console.log(`[LIVE PNL] ${state.activeSymbol}: In profit zone (${(currentProfitPercentage * 100).toFixed(2)}%)`);
     }
 
     const pos = await binanceRequest("GET", "/fapi/v2/positionRisk", { symbol: state.activeSymbol });
@@ -226,6 +249,7 @@ async function monitorPosition() {
             state.tpPriceLow = null;
             state.slPrice = null;
             state.pnl = 0; // Reset PnL
+            state.breakEvenHit = false; // Reset breakEvenHit flag
         }
     }
     saveState();
