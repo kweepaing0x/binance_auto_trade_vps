@@ -55,12 +55,19 @@ class Indicators {
 
     // 4. EMA (Exponential Moving Average)
     static ema(prices, period) {
+        if (prices.length < period) return [];
         const k = 2 / (period + 1);
-        let ema = prices[0];
-        for (let i = 1; i < prices.length; i++) {
-            ema = (prices[i] * k) + (ema * (1 - k));
+        let emas = [];
+        // Calculate initial SMA for the first EMA
+        let sma = prices.slice(0, period).reduce((sum, price) => sum + price, 0) / period;
+        emas.push(sma);
+
+        // Calculate subsequent EMAs
+        for (let i = period; i < prices.length; i++) {
+            sma = (prices[i] * k) + (sma * (1 - k));
+            emas.push(sma);
         }
-        return ema;
+        return emas;
     }
 }
 
