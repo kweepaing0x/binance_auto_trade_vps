@@ -137,8 +137,13 @@ async function runScalpLogic() {
         const lastEma200_4h = ema200_4h[ema200_4h.length - 1];
         const lastPrice4h = prices4h[prices4h.length - 1];
 
-        if (lastPrice4h < lastEma200_4h) {
-            console.log(`[4H Filter] Skipping ${symbol}: Price is below 4H EMA 200 proxy. Longs only.`);
+        let tradeDirection = null;
+        if (lastPrice4h > lastEma200_4h) {
+            tradeDirection = 'LONG';
+        } else if (lastPrice4h < lastEma200_4h) {
+            tradeDirection = 'SHORT';
+        } else {
+            console.log(`[4H Filter] Skipping ${symbol}: Price is neutral to 4H EMA 200 proxy.`);
             continue;
         }
 
@@ -157,9 +162,16 @@ async function runScalpLogic() {
         const lastEma21 = ema21[ema21.length - 1];
         const prevEma21 = ema21[ema21.length - 2];
 
-        // Check for EMA 8/21 crossover (bullish crossover)
+        // Check for EMA 8/21 crossover
+        let emaCrossSignal = null;
         if (prevEma8 <= prevEma21 && lastEma8 > lastEma21) {
-            console.log(`✨ EMA Crossover detected for ${symbol}. Performing Deep Scan...`);
+            emaCrossSignal = 'BULLISH';
+        } else if (prevEma8 >= prevEma21 && lastEma8 < lastEma21) {
+            emaCrossSignal = 'BEARISH';
+        }
+
+        if (emaCrossSignal) {
+            console.log(`✨ EMA Crossover (${emaCrossSignal}) detected for ${symbol}. Performing Deep Scan...`);
             // Perform Deep Scan (accumulation check) as a confirmation
             const candles1hForDeepScan = await getKlines(symbol, '1h', 24);
             if (candles1hForDeepScan.length < 24) continue;
@@ -168,11 +180,18 @@ async function runScalpLogic() {
             // Fetch more klines for FVG detection (e.g., 50 candles for 1h)
             const candlesForFvg = await getKlines(symbol, '1h', 50);
             const fvgs = DeepScan.findFairValueGaps(candlesForFvg);
-            const hasBullishFvg = fvgs.some(fvg => fvg.type === 'BULLISH');
+            
+            let hasFvgConfirmation = false;
+            if (emaCrossSignal === 'BULLISH' && tradeDirection === 'LONG') {
+                hasFvgConfirmation = fvgs.some(fvg => fvg.type === 'BULLISH');
+            } else if (emaCrossSignal === 'BEARISH' && tradeDirection === 'SHORT') {
+                hasFvgConfirmation = fvgs.some(fvg => fvg.type === 'BEARISH');
+            }
 
-            if (deepScanResult.isAccumulating && hasBullishFvg) {
-                console.log(`🎯 SNIPER FOUND: LONG ${symbol} at ${k1h[k1h.length-1].c}`);
-                await executeTrade(symbol, 'BUY', k1h[k1h.length-1].c);
+            if (deepScanResult.isAccumulating && hasFvgConfirmation) {
+                const tradeSide = (emaCrossSignal === 'BULLISH') ? 'BUY' : 'SELL';
+                console.log(`🎯 SNIPER FOUND: ${tradeSide} ${symbol} at ${k1h[k1h.length-1].c}`);
+                await executeTrade(symbol, tradeSide, k1h[k1h.length-1].c);
                 break; // Stop scanning once we initiate an order
             }
         }
@@ -187,9 +206,14 @@ async function executeTrade(symbol, side, price) {
     state.mode = 'PENDING_ORDER';
     state.activeSymbol = symbol;
     state.entryPrice = price;
-    state.tpPriceHigh = price * (1 + CONFIG.TP_ROI_HIGH);
-    state.tpPriceLow = price * (1 + CONFIG.TP_ROI_LOW);
-    state.slPrice = price * (1 + CONFIG.SL_ROI);
+    state.side = side; // Store the trade side
+    if (side === 'BUY') {
+        state.tpPriceHigh = price * (1 + CONFIG.TP_ROI_HIGH);
+        state.slPrice = price * (1 + CONFIG.SL_ROI);
+    } else { // SELL (Short)
+        state.tpPriceHigh = price * (1 - CONFIG.TP_ROI_HIGH);
+        state.slPrice = price * (1 - CONFIG.SL_ROI);
+    }
     saveState();
 }
 
@@ -205,32 +229,52 @@ async function monitorPosition() {
     const currentPrice = klines[0].c;
 
     // Check for Take Profit or Stop Loss
-    if (currentPrice >= state.tpPriceHigh || currentPrice <= state.slPrice) {
-        // If TP/SL hit, reset breakEvenHit flag
+    let exitConditionMet = false;
+    if (state.side === 'BUY') {
+        if (currentPrice >= state.tpPriceHigh || currentPrice <= state.slPrice) {
+            exitConditionMet = true;
+        }
+    } else { // SELL (Short)
+        if (currentPrice <= state.tpPriceHigh || currentPrice >= state.slPrice) {
+            exitConditionMet = true;
+        }
+    }
+
+    if (exitConditionMet) {
         state.breakEvenHit = false;
-        console.log(`\n🎯 Closing position for ${state.activeSymbol} at ${currentPrice}. TP/SL hit.`);
-        // Simulate closing position (actual API call would go here)
+        console.log(`\n🎯 Closing ${state.side} position for ${state.activeSymbol} at ${currentPrice}. TP/SL hit.`);
         state.mode = 'SCANNING';
         state.activeSymbol = null;
         state.entryPrice = null;
         state.tpPriceHigh = null;
         state.tpPriceLow = null;
         state.slPrice = null;
-        state.pnl = 0; // Reset PnL
+        state.pnl = 0;
+        state.side = null; // Reset side
         saveState();
         return;
     }
 
     // Move Stop Loss to Break-Even if profit target is hit
-    const currentProfitPercentage = (currentPrice - state.entryPrice) / state.entryPrice;
-    if (!state.breakEvenHit && currentProfitPercentage >= CONFIG.BREAK_EVEN_PROFIT_PERCENTAGE) {
-        state.slPrice = state.entryPrice;
-        state.breakEvenHit = true;
-        console.log(`\n✅ SL moved to Break-Even for ${state.activeSymbol} at ${state.entryPrice}`);
+    let currentProfitPercentage;
+    if (state.side === 'BUY') {
+        currentProfitPercentage = (currentPrice - state.entryPrice) / state.entryPrice;
+    } else { // SELL (Short)
+        currentProfitPercentage = (state.entryPrice - currentPrice) / state.entryPrice;
     }
 
-    if (currentProfitPercentage >= CONFIG.TP_ROI_LOW && currentProfitPercentage < CONFIG.TP_ROI_HIGH) {
-        console.log(`[LIVE PNL] ${state.activeSymbol}: In profit zone (${(currentProfitPercentage * 100).toFixed(2)}%)`);
+    if (!state.breakEvenHit && currentProfitPercentage >= CONFIG.BREAK_EVEN_PROFIT_PERCENTAGE) {
+        if (state.side === 'BUY') {
+            state.slPrice = state.entryPrice;
+        } else { // SELL (Short)
+            state.slPrice = state.entryPrice;
+        }
+        state.breakEvenHit = true;
+        console.log(`\n✅ SL moved to Break-Even for ${state.activeSymbol} (${state.side}) at ${state.entryPrice}`);
+    }
+
+    if (currentProfitPercentage >= CONFIG.BREAK_EVEN_PROFIT_PERCENTAGE && currentProfitPercentage < CONFIG.TP_ROI_HIGH) {
+        console.log(`[LIVE PNL] ${state.activeSymbol} (${state.side}): In profit zone (${(currentProfitPercentage * 100).toFixed(2)}%)`);
     }
 
     const pos = await binanceRequest("GET", "/fapi/v2/positionRisk", { symbol: state.activeSymbol });
@@ -248,8 +292,9 @@ async function monitorPosition() {
             state.tpPriceHigh = null;
             state.tpPriceLow = null;
             state.slPrice = null;
-            state.pnl = 0; // Reset PnL
-            state.breakEvenHit = false; // Reset breakEvenHit flag
+            state.pnl = 0;
+            state.breakEvenHit = false;
+            state.side = null; // Reset side
         }
     }
     saveState();
