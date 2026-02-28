@@ -21,10 +21,10 @@ const CONFIG = {
     CAPITAL: 30,
     MARGIN: 15,
     LEVERAGE: 20,
-    TP_ROI_HIGH: 0.20, // 20%
-    TP_ROI_LOW: 0.10,  // 10%
-    SL_ROI: -0.20,     // -20%
-    BREAK_EVEN_PROFIT_PERCENTAGE: 0.05, // Move SL to entry at 5% profit
+    TP_ROI_HIGH: 0.01, // 1% TP (20% ROI at 20x leverage)
+    TP_ROI_LOW: 0.005, // Not used for partial close, but for BE trigger
+    SL_ROI: -0.01,     // -1% SL (20% risk at 20x leverage)
+    BREAK_EVEN_PROFIT_PERCENTAGE: 0.005, // Move SL to entry at 0.5% profit (10% ROI at 20x leverage)
     WATCHLIST_PATH: './watchlist.json',
     WATCHLIST_EXPIRY_DAYS: 5,
     STATE_PATH: './engine_state.json',
